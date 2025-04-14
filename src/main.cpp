@@ -29,6 +29,20 @@ void cleanupSockets()
 #endif
 }
 
+std::string sendCommand(int sock, const std::string &cmd)
+{
+    send(sock, cmd.c_str(), cmd.size(), 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200)); // slight delay for response
+
+    char buffer[1024];
+    int bytesReceived = recv(sock, buffer, sizeof(buffer) - 1, 0);
+    if (bytesReceived <= 0)
+        return "";
+
+    buffer[bytesReceived] = '\0';
+    return std::string(buffer);
+}
+
 struct Aircraft
 {
     std::string callsign;
@@ -63,24 +77,9 @@ int main()
         return 1;
     }
 
-    std::string cmd = "#TR\n";
-    send(sock, cmd.c_str(), cmd.size(), 0);
-
-    std::string response;
-    char buffer[1024];
-    int bytesRead;
-
-    do
-    {
-        bytesRead = recv(sock, buffer, sizeof(buffer) - 1, 0);
-        if (bytesRead > 0)
-        {
-            buffer[bytesRead] = '\0';
-            response += buffer;
-            std::cout << "\nRAW RESPONSE FROM AURORA:\n"
-                      << response << "\n\n";
-        }
-    } while (bytesRead > 0);
+    std::string response = sendCommand(sock, "#TR\n");
+    std::cout << "\nRAW RESPONSE FROM AURORA:\n"
+              << response << "\n\n";
 
     std::istringstream stream(response);
     std::string line;
@@ -89,7 +88,10 @@ int main()
     std::vector<Aircraft> aircraftList;
     while (std::getline(stream, line))
     {
-        if (!line.empty() && line.find("#TR") == std::string::npos)
+        if (!line.empty() &&
+            line.find("#TR") == std::string::npos &&
+            line.find("Welcome") == std::string::npos &&
+            line[0] != '[')
         {
             std::istringstream lineStream(line);
             Aircraft ac;
@@ -97,10 +99,9 @@ int main()
 
             aircraftList.push_back(ac);
 
-            std::cout << "• " << ac.callsign << " " << ac.type << " " << ac.dep << " → " << ac.arr
+            std::cout << "* " << ac.callsign << " " << ac.type << " " << ac.dep << " -> " << ac.arr
                       << " FL" << ac.flightlevel;
 
-            //TODO: Tanker detection (logic not working)
             std::string typeUpper;
             for (char c : ac.type)
             {
@@ -110,11 +111,35 @@ int main()
 
             if (typeUpper.find("KC") != std::string::npos || typeUpper.find("MRTT") != std::string::npos)
             {
-                std::cout << "  ← TANKER";
+                std::cout << "  <- TANKER";
             }
 
+            std::string fpCmd = "#FP " + ac.callsign + "\n";
+            std::string fpResponse = sendCommand(sock, fpCmd);
+
+            if (!fpResponse.empty())
+            {
+                std::cout << "   [FP] " << fpResponse;
+                // check if 'AAR' is mentioned in the flight plan
+                if (fpResponse.find("AAR") != std::string::npos || fpResponse.find("TANKER") != std::string::npos)
+                {
+                    std::cout << "   => AAR-RELATED FLIGHT\n";
+                }
+            }
             std::cout << '\n';
         }
+    }
+
+    std::string input;
+    while (true)
+    {
+        std::cout << "Enter Aurora command (or 'exit'): ";
+        std::getline(std::cin, input);
+        if (input == "exit")
+            break;
+
+        std::string response = sendCommand(sock, input + "\n");
+        std::cout << response << "\n";
     }
 
 #ifdef _WIN32
